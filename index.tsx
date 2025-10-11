@@ -57,7 +57,31 @@ const t = {
   },
   noItemsToDisplay: '表示する項目がありません。',
   noDownloadHistory: 'ダウンロード履歴はありません。',
-  noCompletedItems: 'ダウンロード可能な完了済み項目がありません。'
+  noCompletedItems: 'ダウンロード可能な完了済み項目がありません。',
+  helpTitle: '使い方ガイド',
+  helpAria: 'ヘルプを開く',
+  helpClose: '閉じる',
+  helpSection1Title: '1. コンテンツの抽出',
+  helpSection1Content: [
+    'テキストエリアに、内容を抽出したいウェブページのURLを1行に1つずつ入力します。',
+    '「抽出を開始」ボタンをクリックすると、各URLのコンテンツ取得が始まります。',
+    '進捗状況は画面下部のリストに表示され、ステータスが「待機中」から「完了」または「エラー」に変わります。'
+  ],
+  helpSection2Title: '2. ダウンロード',
+  helpSection2Content: [
+    '抽出が完了した項目は、ダウンロードオプションパネルでダウンロードできます。',
+    '<strong>ダウンロード対象:</strong> 「URL単位で選択」で特定のURLだけを選ぶか、「完了したものをすべてダウンロード」ですべてを対象にするかを選択します。',
+    '<strong>ファイルのまとめ方:</strong> 「個別ファイル」はURLごとにテキストファイルを、「結合ファイル」はすべての内容を1つのファイルにまとめます。',
+    '<strong>ダウンロード方法:</strong> 「個別ダウンロード」はファイルを1つずつ、「ZIPアーカイブ」はZIPファイルにまとめてダウンロードします。',
+    '<strong>最大サイズ (KB):</strong> ファイルが大きすぎる場合に、ここで指定したサイズで分割または切り詰めます。(0は無制限)',
+    '設定を選んだら、「ダウンロード」ボタンをクリックします。'
+  ],
+  helpSection3Title: '3. リストの管理',
+  helpSection3Content: [
+    '<strong>失敗を再試行:</strong> エラーになったURLのみ、コンテンツの再取得を試みます。',
+    '<strong>完了をクリア:</strong> 完了した項目をリストから削除します。',
+    '<strong>すべてクリア:</strong> すべての履歴（URL入力、進捗状況）をリセットします。'
+  ]
 };
 
 // --- 1. TYPES ---
@@ -437,10 +461,61 @@ const useAppActions = () => {
 
 // --- 4. UI COMPONENTS ---
 
-const Header: FC = () => (
+const HelpModal: FC<{ isOpen: boolean; onClose: () => void; }> = ({ isOpen, onClose }) => {
+    useEffect(() => {
+        const handleEsc = (event: KeyboardEvent) => {
+           if (event.key === 'Escape') {
+              onClose();
+           }
+        };
+        window.addEventListener('keydown', handleEsc);
+        return () => {
+            window.removeEventListener('keydown', handleEsc);
+        };
+    }, [onClose]);
+
+    if (!isOpen) return null;
+
+    const renderContent = (content: string[]) => (
+        <ul>
+            {content.map((line, index) => {
+                const parts = line.split(/<strong>(.*?)<\/strong>/);
+                return (
+                    <li key={index}>
+                        {parts.map((part, i) =>
+                            i % 2 === 1 ? <strong key={i}>{part}</strong> : part
+                        )}
+                    </li>
+                );
+            })}
+        </ul>
+    );
+
+    return (
+        <div className={`modal-overlay ${isOpen ? 'open' : ''}`} onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+            <div className="modal-content" onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                    <h2 id="help-modal-title">{t.helpTitle}</h2>
+                    <button className="modal-close-btn" onClick={onClose} aria-label={t.helpClose}>&times;</button>
+                </div>
+                <div className="modal-body">
+                    <h3>{t.helpSection1Title}</h3>
+                    {renderContent(t.helpSection1Content)}
+                    <h3>{t.helpSection2Title}</h3>
+                    {renderContent(t.helpSection2Content)}
+                    <h3>{t.helpSection3Title}</h3>
+                    {renderContent(t.helpSection3Content)}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const Header: FC<{ onHelpClick: () => void }> = ({ onHelpClick }) => (
   <header>
     <h1>{t.title}</h1>
     <p>{t.subtitle}</p>
+    <button className="help-btn" onClick={onHelpClick} aria-label={t.helpAria}>?</button>
   </header>
 );
 
@@ -739,12 +814,14 @@ const ProgressView: FC = () => {
 }
 
 const App: FC = () => {
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   return (
     <ProgressProvider>
-      <Header />
+      <Header onHelpClick={() => setIsHelpOpen(true)} />
       <ExtractionPanel />
       <ProgressView />
       <DownloadPanel />
+      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
     </ProgressProvider>
   );
 };
