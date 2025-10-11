@@ -343,26 +343,56 @@ const useAppActions = () => {
                 .map(([url]) => url);
         }
 
-        const maxSizeInBytes = maxSize > 0 ? maxSize * 1024 : Infinity;
-        const itemsToDownload: { url: string, content: string }[] = [];
+        const completedItems = urlsToConsider
+            .map(url => ({ url, item: progress[url] }))
+            .filter(({ item }) => item?.status === 'completed' && item.content);
+        
+        if (completedItems.length === 0) {
+            alert("ダウンロード対象のファイルがありません。");
+            dispatch({ type: 'FINISH_PROCESSING' });
+            return;
+        }
 
-        for (const url of urlsToConsider) {
-            const item = progress[url];
-            if (item?.status === 'completed' && item.content) {
-                let content = item.content;
+        const maxSizeInBytes = maxSize > 0 ? maxSize * 1024 : Infinity;
+        const filesToCreate: { filename: string, content: string }[] = [];
+
+        if (contentFormat === 'individual') {
+            for (const { url, item } of completedItems) {
+                let content = item!.content!;
                 const contentBytes = new TextEncoder().encode(content);
+
                 if (contentBytes.length > maxSizeInBytes) {
                     const truncatedBytes = contentBytes.slice(0, maxSizeInBytes);
-                    // Use a non-fatal decoder to avoid errors on broken multi-byte characters
                     content = new TextDecoder('utf-8', { fatal: false }).decode(truncatedBytes);
                 }
-                itemsToDownload.push({ url, content });
+                
+                const filename = url.replace(/[^a-zA-Z0-9.-]/g, '_') + '.txt';
+                filesToCreate.push({ filename, content });
             }
-        }
-        
-        if (itemsToDownload.length === 0) {
-            alert("ダウンロード対象のファイルがありません。");
-            return;
+        } else { // combined
+            const combinedContent = completedItems
+                .map(({ url, item }) => `--- Content from: ${url} ---\n\n${item!.content!}`)
+                .join('\n\n\n');
+
+            const combinedContentBytes = new TextEncoder().encode(combinedContent);
+            
+            if (maxSizeInBytes === Infinity || combinedContentBytes.length <= maxSizeInBytes) {
+                filesToCreate.push({ filename: 'combined_content.txt', content: combinedContent });
+            } else {
+                let fileCounter = 1;
+                let startIndex = 0;
+                while(startIndex < combinedContentBytes.length) {
+                    const endIndex = startIndex + maxSizeInBytes;
+                    const chunkBytes = combinedContentBytes.slice(startIndex, endIndex);
+                    const chunkContent = new TextDecoder('utf-8', { fatal: false }).decode(chunkBytes);
+                    
+                    const filename = `combined_content_${String(fileCounter).padStart(3, '0')}.txt`;
+                    filesToCreate.push({ filename, content: chunkContent });
+                    
+                    startIndex = endIndex;
+                    fileCounter++;
+                }
+            }
         }
 
         const downloadFile = (blob: Blob, filename: string) => {
@@ -378,36 +408,20 @@ const useAppActions = () => {
         if (packageFormat === 'zip') {
             if (typeof JSZip === 'undefined') {
                 alert('ZIPライブラリがロードされていません。');
+                dispatch({ type: 'FINISH_PROCESSING' });
                 return;
             }
             const zip = new JSZip();
-            if (contentFormat === 'combined') {
-                const combinedContent = itemsToDownload
-                    .map(({ url, content }) => `--- Content from: ${url} ---\n\n${content}`)
-                    .join('\n\n\n');
-                zip.file('combined_content.txt', combinedContent);
-            } else { // individual
-                for (const { url, content } of itemsToDownload) {
-                    const filename = url.replace(/[^a-zA-Z0-9.-]/g, '_') + '.txt';
-                    zip.file(filename, content);
-                }
+            for (const file of filesToCreate) {
+                zip.file(file.filename, file.content);
             }
             const zipBlob = await zip.generateAsync({ type: 'blob' });
             downloadFile(zipBlob, 'downloaded_content.zip');
         } else { // 'files'
-            if (contentFormat === 'combined') {
-                const combinedContent = itemsToDownload
-                    .map(({ url, content }) => `--- Content from: ${url} ---\n\n${content}`)
-                    .join('\n\n\n');
-                const blob = new Blob([combinedContent], { type: 'text/plain;charset=utf-8' });
-                downloadFile(blob, 'combined_content.txt');
-            } else { // 'individual'
-                for (const { url, content } of itemsToDownload) {
-                    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-                    const filename = url.replace(/[^a-zA-Z0-9.-]/g, '_') + '.txt';
-                    downloadFile(blob, filename);
-                    await new Promise(resolve => setTimeout(resolve, 100)); // Prevent browser blocking multiple downloads
-                }
+            for (const file of filesToCreate) {
+                const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+                downloadFile(blob, file.filename);
+                await new Promise(resolve => setTimeout(resolve, 100)); // Prevent browser blocking multiple downloads
             }
         }
     } catch (error) {
