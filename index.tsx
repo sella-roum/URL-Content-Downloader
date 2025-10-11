@@ -22,11 +22,13 @@ const t = {
   subtitle: 'URLを入力してコンテンツを抽出し、ダウンロードします。',
   urlListLabel: 'URLリスト（1行に1つ）',
   urlListPlaceholder: 'https://example.com/page1\nhttps://example.com/page2',
-  downloadFormatLabel: 'ダウンロード形式',
-  individualFiles: '個別ファイル (.txt)',
-  zipArchive: 'ZIPアーカイブ (.zip)',
-  combinedText: '結合テキストファイル (.txt)',
-  maxSizeLabel: '最大サイズ (KB)',
+  fileArrangementLabel: 'ファイルのまとめ方',
+  individualContent: '個別ファイル (URLごと)',
+  combinedContent: '結合ファイル (すべてを1つに)',
+  packageFormatLabel: 'ダウンロード方法',
+  downloadAsFiles: '個別ダウンロード (.txt)',
+  downloadAsZip: 'ZIPアーカイブ (.zip)',
+  maxSizePerFileLabel: '1ファイルあたりの最大サイズ (KB)',
   extract: '抽出を開始',
   retryFailed: '失敗を再試行',
   clearCompleted: '完了をクリア',
@@ -62,7 +64,8 @@ const t = {
 declare var JSZip: any;
 
 type ProgressStatus = 'pending' | 'completed' | 'error';
-type DownloadType = 'individual' | 'zip' | 'combined-text';
+type ContentFormat = 'individual' | 'combined';
+type PackageFormat = 'files' | 'zip';
 type DownloadTarget = 'selected' | 'all';
 
 interface ProgressItem {
@@ -74,7 +77,8 @@ interface ProgressItem {
 interface State {
   urlsToProcess: string;
   downloadOptions: {
-    type: DownloadType;
+    contentFormat: ContentFormat;
+    packageFormat: PackageFormat;
     maxSize: number;
   };
   progress: {
@@ -87,7 +91,7 @@ interface State {
 
 type Action =
   | { type: 'SET_URLS'; payload: string }
-  | { type: 'SET_DOWNLOAD_OPTIONS'; payload: { type?: DownloadType; maxSize?: number }; }
+  | { type: 'SET_DOWNLOAD_OPTIONS'; payload: { contentFormat?: ContentFormat; packageFormat?: PackageFormat; maxSize?: number }; }
   | { type: 'PROGRESS_UPDATE'; payload: { [url: string]: ProgressItem } }
   | { type: 'START_PROCESSING' }
   | { type: 'FINISH_PROCESSING' }
@@ -142,7 +146,8 @@ const idb = {
 const initialState: State = {
   urlsToProcess: '',
   downloadOptions: {
-    type: 'individual',
+    contentFormat: 'individual',
+    packageFormat: 'files',
     maxSize: 1024,
   },
   progress: {},
@@ -324,6 +329,7 @@ const useAppActions = () => {
 
   const startDownload = useCallback(async () => {
     const { downloadTarget, selectedUrlsForDownload, downloadOptions, progress } = state;
+    const { contentFormat, packageFormat, maxSize } = downloadOptions;
     
     dispatch({ type: 'START_PROCESSING' });
 
@@ -337,20 +343,20 @@ const useAppActions = () => {
                 .map(([url]) => url);
         }
 
-        let totalSize = 0;
-        const maxSizeInBytes = downloadOptions.maxSize > 0 ? downloadOptions.maxSize * 1024 : Infinity;
+        const maxSizeInBytes = maxSize > 0 ? maxSize * 1024 : Infinity;
         const itemsToDownload: { url: string, content: string }[] = [];
 
         for (const url of urlsToConsider) {
             const item = progress[url];
             if (item?.status === 'completed' && item.content) {
-                const contentBytes = new TextEncoder().encode(item.content).length;
-                if ((totalSize + contentBytes) > maxSizeInBytes) {
-                    console.warn(`Stopping before adding ${url} as it would exceed the max size limit of ${downloadOptions.maxSize} KB.`);
-                    break; 
+                let content = item.content;
+                const contentBytes = new TextEncoder().encode(content);
+                if (contentBytes.length > maxSizeInBytes) {
+                    const truncatedBytes = contentBytes.slice(0, maxSizeInBytes);
+                    // Use a non-fatal decoder to avoid errors on broken multi-byte characters
+                    content = new TextDecoder('utf-8', { fatal: false }).decode(truncatedBytes);
                 }
-                totalSize += contentBytes;
-                itemsToDownload.push({ url, content: item.content });
+                itemsToDownload.push({ url, content });
             }
         }
         
@@ -359,59 +365,49 @@ const useAppActions = () => {
             return;
         }
 
-        switch (downloadOptions.type) {
-            case 'individual':
-                for (const { url, content } of itemsToDownload) {
-                    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(blob);
-                    const filename = url.replace(/[^a-zA-Z0-9.-]/g, '_') + '.txt';
-                    link.download = filename;
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    URL.revokeObjectURL(link.href);
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
-                break;
-            
-            // FIX: Add block scope to case to prevent variable redeclaration error.
-            case 'zip': {
-                if (typeof JSZip === 'undefined') {
-                    alert('ZIPライブラリがロードされていません。');
-                    console.error('JSZip is not defined.');
-                    return;
-                }
-                const zip = new JSZip();
+        const downloadFile = (blob: Blob, filename: string) => {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+        };
+
+        if (packageFormat === 'zip') {
+            if (typeof JSZip === 'undefined') {
+                alert('ZIPライブラリがロードされていません。');
+                return;
+            }
+            const zip = new JSZip();
+            if (contentFormat === 'combined') {
+                const combinedContent = itemsToDownload
+                    .map(({ url, content }) => `--- Content from: ${url} ---\n\n${content}`)
+                    .join('\n\n\n');
+                zip.file('combined_content.txt', combinedContent);
+            } else { // individual
                 for (const { url, content } of itemsToDownload) {
                     const filename = url.replace(/[^a-zA-Z0-9.-]/g, '_') + '.txt';
                     zip.file(filename, content);
                 }
-                const zipBlob = await zip.generateAsync({ type: 'blob' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(zipBlob);
-                link.download = 'downloaded_content.zip';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(link.href);
-                break;
             }
-
-            // FIX: Add block scope to case to prevent variable redeclaration error.
-            case 'combined-text': {
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            downloadFile(zipBlob, 'downloaded_content.zip');
+        } else { // 'files'
+            if (contentFormat === 'combined') {
                 const combinedContent = itemsToDownload
                     .map(({ url, content }) => `--- Content from: ${url} ---\n\n${content}`)
                     .join('\n\n\n');
                 const blob = new Blob([combinedContent], { type: 'text/plain;charset=utf-8' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = 'combined_content.txt';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(link.href);
-                break;
+                downloadFile(blob, 'combined_content.txt');
+            } else { // 'individual'
+                for (const { url, content } of itemsToDownload) {
+                    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                    const filename = url.replace(/[^a-zA-Z0-9.-]/g, '_') + '.txt';
+                    downloadFile(blob, filename);
+                    await new Promise(resolve => setTimeout(resolve, 100)); // Prevent browser blocking multiple downloads
+                }
             }
         }
     } catch (error) {
@@ -421,7 +417,6 @@ const useAppActions = () => {
         dispatch({ type: 'FINISH_PROCESSING' });
     }
   }, [state, dispatch]);
-
 
   return { startExtraction, retryFailed, clearHistory, startDownload };
 };
@@ -553,47 +548,66 @@ const DownloadPanel: FC = () => {
             
             <hr className="divider"/>
 
-            <div>
-              <label>{t.downloadFormatLabel}</label>
-              <div className="radio-group">
-                <label>
-                  <input
-                    type="radio"
-                    name="downloadType"
-                    value="individual"
-                    checked={state.downloadOptions.type === 'individual'}
-                    onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { type: 'individual' } })}
-                    disabled={state.isProcessing}
-                  />
-                  {t.individualFiles}
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="downloadType"
-                    value="zip"
-                    checked={state.downloadOptions.type === 'zip'}
-                    onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { type: 'zip' } })}
-                    disabled={state.isProcessing}
-                  />
-                  {t.zipArchive}
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="downloadType"
-                    value="combined-text"
-                    checked={state.downloadOptions.type === 'combined-text'}
-                    onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { type: 'combined-text' } })}
-                    disabled={state.isProcessing}
-                  />
-                  {t.combinedText}
-                </label>
-              </div>
+            <div className="options-grid">
+                <div>
+                  <label>{t.fileArrangementLabel}</label>
+                  <div className="radio-group">
+                    <label>
+                      <input
+                        type="radio"
+                        name="contentFormat"
+                        value="individual"
+                        checked={state.downloadOptions.contentFormat === 'individual'}
+                        onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { contentFormat: 'individual' } })}
+                        disabled={state.isProcessing}
+                      />
+                      {t.individualContent}
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="contentFormat"
+                        value="combined"
+                        checked={state.downloadOptions.contentFormat === 'combined'}
+                        onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { contentFormat: 'combined' } })}
+                        disabled={state.isProcessing}
+                      />
+                      {t.combinedContent}
+                    </label>
+                  </div>
+                </div>
+                
+                <div>
+                  <label>{t.packageFormatLabel}</label>
+                  <div className="radio-group">
+                    <label>
+                      <input
+                        type="radio"
+                        name="packageFormat"
+                        value="files"
+                        checked={state.downloadOptions.packageFormat === 'files'}
+                        onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { packageFormat: 'files' } })}
+                        disabled={state.isProcessing}
+                      />
+                      {t.downloadAsFiles}
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="packageFormat"
+                        value="zip"
+                        checked={state.downloadOptions.packageFormat === 'zip'}
+                        onChange={() => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { packageFormat: 'zip' } })}
+                        disabled={state.isProcessing}
+                      />
+                      {t.downloadAsZip}
+                    </label>
+                  </div>
+                </div>
             </div>
             
             <div>
-                <label htmlFor="maxSize">{t.maxSizeLabel}</label>
+                <label htmlFor="maxSize">{t.maxSizePerFileLabel}</label>
                 <input
                     id="maxSize"
                     type="number"
