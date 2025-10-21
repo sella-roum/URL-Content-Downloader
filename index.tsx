@@ -29,6 +29,8 @@ const t = {
   downloadAsFiles: '個別ダウンロード (.txt)',
   downloadAsZip: 'ZIPアーカイブ (.zip)',
   maxSizePerFileLabel: '1ファイルあたりの最大サイズ (KB)',
+  combinedFilenameLabel: '結合ファイル名',
+  combinedFilenamePlaceholder: 'combined_content.txt',
   extract: '抽出を開始',
   retryFailed: '失敗を再試行',
   clearCompleted: '完了をクリア',
@@ -104,6 +106,7 @@ interface State {
     contentFormat: ContentFormat;
     packageFormat: PackageFormat;
     maxSize: number;
+    combinedFilename: string;
   };
   progress: {
     [url: string]: ProgressItem;
@@ -115,7 +118,7 @@ interface State {
 
 type Action =
   | { type: 'SET_URLS'; payload: string }
-  | { type: 'SET_DOWNLOAD_OPTIONS'; payload: { contentFormat?: ContentFormat; packageFormat?: PackageFormat; maxSize?: number }; }
+  | { type: 'SET_DOWNLOAD_OPTIONS'; payload: { contentFormat?: ContentFormat; packageFormat?: PackageFormat; maxSize?: number; combinedFilename?: string }; }
   | { type: 'PROGRESS_UPDATE'; payload: { [url: string]: ProgressItem } }
   | { type: 'START_PROCESSING' }
   | { type: 'FINISH_PROCESSING' }
@@ -173,6 +176,7 @@ const initialState: State = {
     contentFormat: 'individual',
     packageFormat: 'files',
     maxSize: 1024,
+    combinedFilename: 'combined_content.txt',
   },
   progress: {},
   isProcessing: false,
@@ -199,10 +203,11 @@ const reducer = (state: State, action: Action): State => {
         }
         const newProgress = { ...state.progress };
         const newSelection = new Set(state.selectedUrlsForDownload);
+        // FIX: Cast item to ProgressItem to access status property.
         Object.entries(newProgress).forEach(([url, item]) => {
             if (
-                (action.payload === 'completed' && item.status === 'completed') ||
-                (action.payload === 'failed' && item.status === 'error')
+                (action.payload === 'completed' && (item as ProgressItem).status === 'completed') ||
+                (action.payload === 'failed' && (item as ProgressItem).status === 'error')
             ) {
                 delete newProgress[url];
                 newSelection.delete(url);
@@ -333,7 +338,7 @@ const useAppActions = () => {
 
   const retryFailed = useCallback(() => {
     const failedUrls = Object.entries(state.progress)
-      .filter(([, item]) => item.status === 'error')
+      .filter(([, item]) => (item as ProgressItem).status === 'error')
       .map(([url]) => url);
     if (failedUrls.length === 0) return;
     dispatch({ type: 'START_PROCESSING' });
@@ -353,7 +358,7 @@ const useAppActions = () => {
 
   const startDownload = useCallback(async () => {
     const { downloadTarget, selectedUrlsForDownload, downloadOptions, progress } = state;
-    const { contentFormat, packageFormat, maxSize } = downloadOptions;
+    const { contentFormat, packageFormat, maxSize, combinedFilename } = downloadOptions;
     
     dispatch({ type: 'START_PROCESSING' });
 
@@ -362,8 +367,9 @@ const useAppActions = () => {
         if (downloadTarget === 'selected') {
             urlsToConsider = Array.from(selectedUrlsForDownload);
         } else {
+            // FIX: Cast item to ProgressItem to access status property.
             urlsToConsider = Object.entries(progress)
-                .filter(([, item]) => item.status === 'completed')
+                .filter(([, item]) => (item as ProgressItem).status === 'completed')
                 .map(([url]) => url);
         }
 
@@ -399,9 +405,10 @@ const useAppActions = () => {
                 .join('\n\n\n');
 
             const combinedContentBytes = new TextEncoder().encode(combinedContent);
+            const baseFilename = (combinedFilename.trim() || 'combined_content.txt').replace(/\.txt$/, '');
             
             if (maxSizeInBytes === Infinity || combinedContentBytes.length <= maxSizeInBytes) {
-                filesToCreate.push({ filename: 'combined_content.txt', content: combinedContent });
+                filesToCreate.push({ filename: `${baseFilename}.txt`, content: combinedContent });
             } else {
                 let fileCounter = 1;
                 let startIndex = 0;
@@ -410,7 +417,7 @@ const useAppActions = () => {
                     const chunkBytes = combinedContentBytes.slice(startIndex, endIndex);
                     const chunkContent = new TextDecoder('utf-8', { fatal: false }).decode(chunkBytes);
                     
-                    const filename = `combined_content_${String(fileCounter).padStart(3, '0')}.txt`;
+                    const filename = `${baseFilename}_${String(fileCounter).padStart(3, '0')}.txt`;
                     filesToCreate.push({ filename, content: chunkContent });
                     
                     startIndex = endIndex;
@@ -522,7 +529,8 @@ const Header: FC<{ onHelpClick: () => void }> = ({ onHelpClick }) => (
 const ExtractionPanel: FC = () => {
     const { state, dispatch } = useProgressContext();
     const { startExtraction, retryFailed, clearHistory } = useAppActions();
-    const hasFailed = useMemo(() => Object.values(state.progress).some(item => item.status === 'error'), [state.progress]);
+    // FIX: Cast item to ProgressItem to access status property.
+    const hasFailed = useMemo(() => Object.values(state.progress).some(item => (item as ProgressItem).status === 'error'), [state.progress]);
     const hasProgress = useMemo(() => Object.keys(state.progress).length > 0, [state.progress]);
 
     return (
@@ -595,7 +603,8 @@ const DownloadPanel: FC = () => {
     const { state, dispatch } = useProgressContext();
     const { startDownload, clearHistory } = useAppActions();
 
-    const completedItems = useMemo(() => Object.entries(state.progress).filter(([, item]) => item.status === 'completed'), [state.progress]);
+    // FIX: Cast item to ProgressItem to access status property.
+    const completedItems = useMemo(() => Object.entries(state.progress).filter(([, item]) => (item as ProgressItem).status === 'completed'), [state.progress]);
 
     if (completedItems.length === 0) {
         return null;
@@ -693,30 +702,42 @@ const DownloadPanel: FC = () => {
                     </label>
                   </div>
                 </div>
+                
+                <div>
+                    <label htmlFor="max-size">{t.maxSizePerFileLabel}</label>
+                    <input
+                        type="number"
+                        id="max-size"
+                        value={state.downloadOptions.maxSize}
+                        onChange={e => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { maxSize: Number(e.target.value) || 0 } })}
+                        min="0"
+                        disabled={state.isProcessing || state.downloadOptions.contentFormat !== 'combined'}
+                    />
+                </div>
+                
+                <div>
+                    <label htmlFor="combined-filename">{t.combinedFilenameLabel}</label>
+                    <input
+                        type="text"
+                        id="combined-filename"
+                        value={state.downloadOptions.combinedFilename}
+                        onChange={(e) => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { combinedFilename: e.target.value } })}
+                        placeholder={t.combinedFilenamePlaceholder}
+                        disabled={state.isProcessing || state.downloadOptions.contentFormat !== 'combined'}
+                    />
+                </div>
             </div>
             
-            <div>
-                <label htmlFor="maxSize">{t.maxSizePerFileLabel}</label>
-                <input
-                    id="maxSize"
-                    type="number"
-                    min="0"
-                    value={state.downloadOptions.maxSize}
-                    onChange={e => dispatch({ type: 'SET_DOWNLOAD_OPTIONS', payload: { maxSize: parseInt(e.target.value, 10) || 0 } })}
-                    disabled={state.isProcessing}
-                />
-            </div>
-
             <div className="actions-panel">
-                <button
+                 <button
                     className="btn btn-primary"
                     onClick={startDownload}
                     disabled={state.isProcessing || (state.downloadTarget === 'selected' && state.selectedUrlsForDownload.size === 0)}
                     aria-label={t.ariaDownload}
-                >
+                 >
                     {t.download}
-                </button>
-                <button
+                 </button>
+                 <button
                     className="btn btn-secondary"
                     onClick={() => clearHistory('completed')}
                     disabled={state.isProcessing}
@@ -729,111 +750,75 @@ const DownloadPanel: FC = () => {
     );
 };
 
-type FilterType = 'all' | ProgressStatus;
-interface FilterTabsProps {
-  currentFilter: FilterType;
-  onFilterChange: (filter: FilterType) => void;
-  counts: { [key in FilterType]?: number };
-}
-
-const FilterTabs: FC<FilterTabsProps> = ({ currentFilter, onFilterChange, counts }) => {
-    const filters: FilterType[] = ['all', 'completed', 'pending', 'error'];
-    const filterLabels: Record<FilterType, string> = t.filters;
-
-    return (
-        <div className="filter-tabs" role="tablist" aria-label="進捗フィルター">
-            {filters.map(filter => (
-                <button
-                    key={filter}
-                    className={`filter-tab ${currentFilter === filter ? 'active' : ''}`}
-                    onClick={() => onFilterChange(filter)}
-                    role="tab"
-                    aria-selected={currentFilter === filter}
-                >
-                    {filterLabels[filter]} ({counts[filter] || 0})
-                </button>
-            ))}
-        </div>
-    );
-};
-
-interface ProgressListProps {
-  items: [string, ProgressItem][];
-}
-
-const ProgressList: FC<ProgressListProps> = ({ items }) => {
-  if (items.length === 0) {
-    return <div className="empty-state">{t.noItemsToDisplay}</div>;
-  }
-  return (
-    <ul className="progress-list">
-      {items.map(([url, item]) => (
-        <li key={url} className="progress-item">
-          <span className="progress-item-url" title={url}>{url}</span>
-          <span className={`status-badge status-${item.status}`}>{t.status[item.status]}</span>
-        </li>
-      ))}
-    </ul>
-  );
-};
-
-
-const ProgressView: FC = () => {
+const ProgressList: FC = () => {
     const { state } = useProgressContext();
-    const [filter, setFilter] = useState<FilterType>('all');
-    
-    const progressItems = useMemo(() => Object.entries(state.progress), [state.progress]);
+    const [filter, setFilter] = useState<ProgressStatus | 'all'>('all');
 
-    const counts = useMemo(() => {
-        const acc: { [key in FilterType]?: number } = { all: progressItems.length };
-        progressItems.forEach(([, item]) => {
-            acc[item.status] = (acc[item.status] || 0) + 1;
-        });
-        return acc;
-    }, [progressItems]);
+    const filteredProgress = useMemo(() => {
+        const entries = Object.entries(state.progress);
+        if (filter === 'all') return entries;
+        // FIX: Cast item to ProgressItem to access status property.
+        return entries.filter(([, item]) => (item as ProgressItem).status === filter);
+    }, [state.progress, filter]);
 
-    const filteredItems = useMemo(() => {
-        if (filter === 'all') return progressItems;
-        return progressItems.filter(([, item]) => item.status === filter);
-    }, [progressItems, filter]);
-
-    if (progressItems.length === 0) {
+    if (Object.keys(state.progress).length === 0) {
         return (
             <div className="card">
                 <div className="empty-state">{t.noDownloadHistory}</div>
             </div>
         );
     }
-    
+
     return (
         <div className="card">
-            <FilterTabs currentFilter={filter} onFilterChange={setFilter} counts={counts} />
-            <ProgressList items={filteredItems} />
+            <div className="filter-tabs">
+                {(['all', 'completed', 'pending', 'error'] as const).map(f => (
+                    <button 
+                        key={f} 
+                        className={`filter-tab ${filter === f ? 'active' : ''}`}
+                        onClick={() => setFilter(f)}
+                    >
+                        {t.filters[f]}
+                    </button>
+                ))}
+            </div>
+            {filteredProgress.length === 0 ? (
+                <div className="empty-state">{t.noItemsToDisplay}</div>
+            ) : (
+                <ul className="progress-list">
+                    {filteredProgress.map(([url, item]) => (
+                        <li key={url} className="progress-item">
+                            <span className="progress-item-url" title={url}>{url}</span>
+                            <span className={`status-badge status-${(item as ProgressItem).status}`}>{t.status[(item as ProgressItem).status]}</span>
+                        </li>
+                    ))}
+                </ul>
+            )}
         </div>
     );
-}
+};
 
 const App: FC = () => {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+
   return (
-    <ProgressProvider>
+    <>
       <Header onHelpClick={() => setIsHelpOpen(true)} />
-      <ExtractionPanel />
-      <ProgressView />
-      <DownloadPanel />
+      <main>
+        <ExtractionPanel />
+        <ProgressList />
+        <DownloadPanel />
+      </main>
       <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
-    </ProgressProvider>
+    </>
   );
 };
 
-// --- 5. RENDER ---
-
-const rootElement = document.getElementById('root');
-if (rootElement) {
-  const root = ReactDOM.createRoot(rootElement);
-  root.render(
-    <React.StrictMode>
+const root = ReactDOM.createRoot(document.getElementById('root')!);
+root.render(
+  <React.StrictMode>
+    <ProgressProvider>
       <App />
-    </React.StrictMode>,
-  );
-}
+    </ProgressProvider>
+  </React.StrictMode>
+);
